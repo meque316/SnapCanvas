@@ -1,65 +1,371 @@
-import Image from "next/image";
+"use client";
+import { useState, useRef, useEffect } from "react";
+import { Stage, Layer, Text, Transformer, Rect, Image as KonvaImage, Line } from "react-konva";
+import jsPDF from "jspdf";
 
 export default function Home() {
+  const [elements, setElements] = useState([]);
+  const [selectedId, setSelectedId] = useState(null);
+  const [editingId, setEditingId] = useState(null);
+  const [inputValue, setInputValue] = useState("");
+  const [colorValue, setColorValue] = useState("#000000");
+  const [guides, setGuides] = useState([]);
+
+  const stageRef = useRef(null);
+  const trRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const objectsRef = useRef([]);
+
+  const GUIDELINE_OFFSET = 5;
+
+  // cache objetos para snapping
+  useEffect(() => {
+    if (!stageRef.current) return;
+    objectsRef.current = stageRef.current.find(".object");
+  }, [elements]);
+
+  // cargar datos seguro
+  useEffect(() => {
+    const saved = localStorage.getItem("editor-data");
+
+    if (saved) {
+      try {
+        setElements(JSON.parse(saved));
+      } catch (error) {
+        console.error("Error parsing saved data:", error);
+        localStorage.removeItem("editor-data");
+      }
+    }
+  }, []);
+
+  // guardar datos
+  useEffect(() => {
+    localStorage.setItem("editor-data", JSON.stringify(elements));
+  }, [elements]);
+
+  const getLineGuideStops = (skipShape) => {
+    const stage = stageRef.current;
+    const vertical = [0, stage.width() / 2, stage.width()];
+    const horizontal = [0, stage.height() / 2, stage.height()];
+
+    objectsRef.current.forEach((guideItem) => {
+      if (guideItem === skipShape) return;
+      const box = guideItem.getClientRect();
+
+      vertical.push(box.x, box.x + box.width, box.x + box.width / 2);
+      horizontal.push(box.y, box.y + box.height, box.y + box.height / 2);
+    });
+
+    return { vertical, horizontal };
+  };
+
+  const handleDragMove = (e) => {
+    const target = e.target;
+    const { vertical, horizontal } = getLineGuideStops(target);
+    const box = target.getClientRect();
+
+    const newGuides = [];
+    let snapX = 0;
+    let snapY = 0;
+
+    vertical.forEach((line) => {
+      [box.x, box.x + box.width, box.x + box.width / 2].forEach((point) => {
+        if (Math.abs(line - point) < GUIDELINE_OFFSET) {
+          snapX = line - point;
+          newGuides.push({ x: line, y: 0, orientation: "V" });
+        }
+      });
+    });
+
+    horizontal.forEach((line) => {
+      [box.y, box.y + box.height, box.y + box.height / 2].forEach((point) => {
+        if (Math.abs(line - point) < GUIDELINE_OFFSET) {
+          snapY = line - point;
+          newGuides.push({ x: 0, y: line, orientation: "H" });
+        }
+      });
+    });
+
+    target.x(target.x() + snapX);
+    target.y(target.y() + snapY);
+
+    setGuides(newGuides);
+  };
+
+  const handleTransformEnd = (node, id) => {
+    const scaleX = node.scaleX();
+    const scaleY = node.scaleY();
+
+    setElements((prev) =>
+      prev.map((el) => {
+        if (el.id !== id) return el;
+
+        return el.type === "text"
+          ? { ...el, x: node.x(), y: node.y(), fontSize: el.fontSize * scaleX }
+          : {
+              ...el,
+              x: node.x(),
+              y: node.y(),
+              width: el.width * scaleX,
+              height: el.height * scaleY,
+            };
+      })
+    );
+
+    node.scaleX(1);
+    node.scaleY(1);
+  };
+
+  const downloadPNG = () => {
+    setSelectedId(null);
+    setGuides([]);
+
+    setTimeout(() => {
+      const uri = stageRef.current.toDataURL({ pixelRatio: 3 });
+      const link = document.createElement("a");
+      link.download = "diseno.png";
+      link.href = uri;
+      link.click();
+    }, 100);
+  };
+
+  const exportPDF = () => {
+    setSelectedId(null);
+    setGuides([]);
+
+    setTimeout(() => {
+      const dataUrl = stageRef.current.toDataURL({ pixelRatio: 3 });
+      const pdf = new jsPDF("p", "mm", "a4");
+
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const imgProps = pdf.getImageProperties(dataUrl);
+
+      const ratio = Math.min(
+        pageWidth / imgProps.width,
+        pageHeight / imgProps.height
+      );
+
+      const imgWidth = imgProps.width * ratio;
+      const imgHeight = imgProps.height * ratio;
+
+      const x = (pageWidth - imgWidth) / 2;
+      const y = (pageHeight - imgHeight) / 2;
+
+      pdf.addImage(dataUrl, "PNG", x, y, imgWidth, imgHeight);
+      pdf.save("orden-produccion.pdf");
+    }, 100);
+  };
+
+  const createId = () => crypto.randomUUID();
+
+  const addText = () =>
+    setElements([
+      ...elements,
+      {
+        id: createId(),
+        type: "text",
+        text: "Nuevo Texto",
+        x: 100,
+        y: 100,
+        fontSize: 25,
+        color: "#000",
+      },
+    ]);
+
+  const handleUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+
+    reader.onload = () => {
+      const img = new window.Image();
+      img.src = reader.result;
+
+      img.onload = () => {
+        setElements([
+          ...elements,
+          {
+            id: createId(),
+            type: "image",
+            image: img,
+            x: 50,
+            y: 50,
+            width: img.width / 4,
+            height: img.height / 4,
+          },
+        ]);
+      };
+    };
+
+    reader.readAsDataURL(file);
+  };
+
+  const moveLayer = (direction) => {
+    if (!selectedId) return;
+
+    setElements((prev) => {
+      const item = prev.find((el) => el.id === selectedId);
+      const filtered = prev.filter((el) => el.id !== selectedId);
+
+      return direction === "front"
+        ? [...filtered, item]
+        : [item, ...filtered];
+    });
+  };
+
+  useEffect(() => {
+    if (!trRef.current || editingId) return;
+
+    const node = stageRef.current.findOne(`#el-${selectedId}`);
+
+    if (node) {
+      trRef.current.nodes([node]);
+      trRef.current.getLayer().batchDraw();
+    } else {
+      trRef.current.nodes([]);
+    }
+  }, [selectedId, editingId, elements]);
+
+  const currentEditingElement = elements.find((el) => el.id === editingId);
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.js file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+    <main className="h-screen flex text-black">
+      <div className="w-1/4 bg-gray-100 p-4 border-r flex flex-col gap-2">
+        <h2 className="font-bold text-xl mb-4">Editor</h2>
+
+        <button onClick={addText} className="bg-blue-600 text-white p-2 rounded">
+          Añadir Texto
+        </button>
+
+        <button
+          onClick={() => fileInputRef.current.click()}
+          className="bg-purple-600 text-white p-2 rounded"
+        >
+          Subir Imagen
+        </button>
+
+        <button onClick={() => moveLayer("front")} className="bg-yellow-500 text-white p-2 rounded">
+          Traer al frente
+        </button>
+
+        <button onClick={() => moveLayer("back")} className="bg-gray-500 text-white p-2 rounded">
+          Enviar atrás
+        </button>
+
+        <button onClick={downloadPNG} className="bg-green-600 text-white p-2 rounded">
+          Descargar PNG
+        </button>
+
+        <button onClick={exportPDF} className="bg-red-600 text-white p-2 rounded">
+          Exportar PDF
+        </button>
+
+        <input type="file" ref={fileInputRef} className="hidden" onChange={handleUpload} />
+      </div>
+
+      <div className="flex-1 flex items-center justify-center bg-gray-300 relative">
+        <Stage
+          width={500}
+          height={500}
+          ref={stageRef}
+          className="bg-white shadow"
+          onMouseDown={(e) => e.target === e.target.getStage() && setSelectedId(null)}
+          onDblClick={(e) => {
+            if (e.target.className === "Text") {
+              const id = e.target.id().replace("el-", "");
+              const el = elements.find((item) => item.id === id);
+
+              setEditingId(el.id);
+              setInputValue(el.text);
+              setColorValue(el.color || "#000");
+            }
+          }}
+        >
+          <Layer>
+            <Rect width={500} height={500} fill="white" />
+
+            {elements.map((el) =>
+              el.type === "image" ? (
+                <KonvaImage
+                  key={el.id}
+                  id={`el-${el.id}`}
+                  name="object"
+                  image={el.image}
+                  x={el.x}
+                  y={el.y}
+                  width={el.width}
+                  height={el.height}
+                  draggable
+                  onDragMove={handleDragMove}
+                  onDragEnd={() => setGuides([])}
+                  onClick={() => setSelectedId(el.id)}
+                  onTransformEnd={(e) => handleTransformEnd(e.target, el.id)}
+                />
+              ) : (
+                <Text
+                  key={el.id}
+                  id={`el-${el.id}`}
+                  name="object"
+                  text={el.text}
+                  x={el.x}
+                  y={el.y}
+                  fontSize={el.fontSize}
+                  fill={el.color}
+                  draggable={!editingId}
+                  onDragMove={handleDragMove}
+                  onDragEnd={() => setGuides([])}
+                  onClick={() => setSelectedId(el.id)}
+                  onTransformEnd={(e) => handleTransformEnd(e.target, el.id)}
+                />
+              )
+            )}
+
+            {guides.map((g, i) => (
+              <Line
+                key={i}
+                points={
+                  g.orientation === "V"
+                    ? [g.x, 0, g.x, 500]
+                    : [0, g.y, 500, g.y]
+                }
+                stroke="#ff00ff"
+                dash={[4, 4]}
+              />
+            ))}
+
+            {selectedId && !editingId && <Transformer ref={trRef} />}
+          </Layer>
+        </Stage>
+
+        {currentEditingElement && (
+          <div
+            className="absolute bg-white border p-2 flex gap-2"
+            style={{
+              top: Math.max(10, currentEditingElement.y - 50),
+              left: Math.max(10, currentEditingElement.x),
+            }}
           >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
+            <input value={inputValue} onChange={(e) => setInputValue(e.target.value)} />
+            <input type="color" value={colorValue} onChange={(e) => setColorValue(e.target.value)} />
+            <button
+              onClick={() => {
+                setElements((prev) =>
+                  prev.map((el) =>
+                    el.id === editingId
+                      ? { ...el, text: inputValue, color: colorValue }
+                      : el
+                  )
+                );
+                setEditingId(null);
+              }}
+            >
+              OK
+            </button>
+          </div>
+        )}
+      </div>
+    </main>
   );
 }
