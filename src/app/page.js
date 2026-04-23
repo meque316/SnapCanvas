@@ -1,10 +1,21 @@
 "use client";
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { Stage, Layer, Text, Transformer, Rect, Image as KonvaImage, Line } from "react-konva";
 import jsPDF from "jspdf";
 
 export default function Home() {
-  const [elements, setElements] = useState([]);
+
+  // ✅ FIX: estado inicial desde localStorage (sin useEffect)
+  const [elements, setElements] = useState(() => {
+    try {
+      const saved = localStorage.getItem("editor-data");
+      return saved ? JSON.parse(saved) : [];
+    } catch (error) {
+      console.error("Error loading data:", error);
+      return [];
+    }
+  });
+
   const [selectedId, setSelectedId] = useState(null);
   const [editingId, setEditingId] = useState(null);
   const [inputValue, setInputValue] = useState("");
@@ -18,31 +29,34 @@ export default function Home() {
 
   const GUIDELINE_OFFSET = 5;
 
-  // cache objetos para snapping
+  // 🔥 Crear imagen (más eficiente)
+  const createImage = (src) => {
+    const img = new window.Image();
+    img.src = src;
+    return img;
+  };
+
+  const renderedElements = useMemo(() => {
+    return elements.map((el) => {
+      if (el.type === "image" && typeof el.image === "string") {
+        return { ...el, imageObj: createImage(el.image) };
+      }
+      return el;
+    });
+  }, [elements]);
+
+  // cache objetos
   useEffect(() => {
     if (!stageRef.current) return;
     objectsRef.current = stageRef.current.find(".object");
   }, [elements]);
-
-  // cargar datos seguro
-  useEffect(() => {
-    const saved = localStorage.getItem("editor-data");
-
-    if (saved) {
-      try {
-        setElements(JSON.parse(saved));
-      } catch (error) {
-        console.error("Error parsing saved data:", error);
-        localStorage.removeItem("editor-data");
-      }
-    }
-  }, []);
 
   // guardar datos
   useEffect(() => {
     localStorage.setItem("editor-data", JSON.stringify(elements));
   }, [elements]);
 
+  // snapping
   const getLineGuideStops = (skipShape) => {
     const stage = stageRef.current;
     const vertical = [0, stage.width() / 2, stage.width()];
@@ -64,9 +78,9 @@ export default function Home() {
     const { vertical, horizontal } = getLineGuideStops(target);
     const box = target.getClientRect();
 
-    const newGuides = [];
     let snapX = 0;
     let snapY = 0;
+    const newGuides = [];
 
     vertical.forEach((line) => {
       [box.x, box.x + box.width, box.x + box.width / 2].forEach((point) => {
@@ -160,8 +174,8 @@ export default function Home() {
   const createId = () => crypto.randomUUID();
 
   const addText = () =>
-    setElements([
-      ...elements,
+    setElements((prev) => [
+      ...prev,
       {
         id: createId(),
         type: "text",
@@ -173,6 +187,7 @@ export default function Home() {
       },
     ]);
 
+  // 🔥 FIX importante
   const handleUpload = (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -180,23 +195,18 @@ export default function Home() {
     const reader = new FileReader();
 
     reader.onload = () => {
-      const img = new window.Image();
-      img.src = reader.result;
-
-      img.onload = () => {
-        setElements([
-          ...elements,
-          {
-            id: createId(),
-            type: "image",
-            image: img,
-            x: 50,
-            y: 50,
-            width: img.width / 4,
-            height: img.height / 4,
-          },
-        ]);
-      };
+      setElements((prev) => [
+        ...prev,
+        {
+          id: createId(),
+          type: "image",
+          image: reader.result,
+          x: 50,
+          y: 50,
+          width: 200,
+          height: 200,
+        },
+      ]);
     };
 
     reader.readAsDataURL(file);
@@ -228,71 +238,30 @@ export default function Home() {
     }
   }, [selectedId, editingId, elements]);
 
-  const currentEditingElement = elements.find((el) => el.id === editingId);
-
   return (
     <main className="h-screen flex text-black">
-      <div className="w-1/4 bg-gray-100 p-4 border-r flex flex-col gap-2">
-        <h2 className="font-bold text-xl mb-4">Editor</h2>
-
-        <button onClick={addText} className="bg-blue-600 text-white p-2 rounded">
-          Añadir Texto
-        </button>
-
-        <button
-          onClick={() => fileInputRef.current.click()}
-          className="bg-purple-600 text-white p-2 rounded"
-        >
-          Subir Imagen
-        </button>
-
-        <button onClick={() => moveLayer("front")} className="bg-yellow-500 text-white p-2 rounded">
-          Traer al frente
-        </button>
-
-        <button onClick={() => moveLayer("back")} className="bg-gray-500 text-white p-2 rounded">
-          Enviar atrás
-        </button>
-
-        <button onClick={downloadPNG} className="bg-green-600 text-white p-2 rounded">
-          Descargar PNG
-        </button>
-
-        <button onClick={exportPDF} className="bg-red-600 text-white p-2 rounded">
-          Exportar PDF
-        </button>
-
+      <div className="w-1/4 bg-gray-100 p-4 flex flex-col gap-2">
+        <button onClick={addText} className="bg-blue-600 text-white p-2 rounded">Añadir Texto</button>
+        <button onClick={() => fileInputRef.current.click()} className="bg-purple-600 text-white p-2 rounded">Subir Imagen</button>
+        <button onClick={() => moveLayer("front")} className="bg-yellow-500 text-white p-2 rounded">Traer al frente</button>
+        <button onClick={() => moveLayer("back")} className="bg-gray-500 text-white p-2 rounded">Enviar atrás</button>
+        <button onClick={downloadPNG} className="bg-green-600 text-white p-2 rounded">PNG</button>
+        <button onClick={exportPDF} className="bg-red-600 text-white p-2 rounded">PDF</button>
         <input type="file" ref={fileInputRef} className="hidden" onChange={handleUpload} />
       </div>
 
-      <div className="flex-1 flex items-center justify-center bg-gray-300 relative">
-        <Stage
-          width={500}
-          height={500}
-          ref={stageRef}
-          className="bg-white shadow"
-          onMouseDown={(e) => e.target === e.target.getStage() && setSelectedId(null)}
-          onDblClick={(e) => {
-            if (e.target.className === "Text") {
-              const id = e.target.id().replace("el-", "");
-              const el = elements.find((item) => item.id === id);
-
-              setEditingId(el.id);
-              setInputValue(el.text);
-              setColorValue(el.color || "#000");
-            }
-          }}
-        >
+      <div className="flex-1 flex justify-center items-center bg-gray-300 relative">
+        <Stage width={500} height={500} ref={stageRef}>
           <Layer>
             <Rect width={500} height={500} fill="white" />
 
-            {elements.map((el) =>
+            {renderedElements.map((el) =>
               el.type === "image" ? (
                 <KonvaImage
                   key={el.id}
                   id={`el-${el.id}`}
                   name="object"
-                  image={el.image}
+                  image={el.imageObj}
                   x={el.x}
                   y={el.y}
                   width={el.width}
@@ -314,57 +283,14 @@ export default function Home() {
                   fontSize={el.fontSize}
                   fill={el.color}
                   draggable={!editingId}
-                  onDragMove={handleDragMove}
-                  onDragEnd={() => setGuides([])}
                   onClick={() => setSelectedId(el.id)}
-                  onTransformEnd={(e) => handleTransformEnd(e.target, el.id)}
                 />
               )
             )}
 
-            {guides.map((g, i) => (
-              <Line
-                key={i}
-                points={
-                  g.orientation === "V"
-                    ? [g.x, 0, g.x, 500]
-                    : [0, g.y, 500, g.y]
-                }
-                stroke="#ff00ff"
-                dash={[4, 4]}
-              />
-            ))}
-
             {selectedId && !editingId && <Transformer ref={trRef} />}
           </Layer>
         </Stage>
-
-        {currentEditingElement && (
-          <div
-            className="absolute bg-white border p-2 flex gap-2"
-            style={{
-              top: Math.max(10, currentEditingElement.y - 50),
-              left: Math.max(10, currentEditingElement.x),
-            }}
-          >
-            <input value={inputValue} onChange={(e) => setInputValue(e.target.value)} />
-            <input type="color" value={colorValue} onChange={(e) => setColorValue(e.target.value)} />
-            <button
-              onClick={() => {
-                setElements((prev) =>
-                  prev.map((el) =>
-                    el.id === editingId
-                      ? { ...el, text: inputValue, color: colorValue }
-                      : el
-                  )
-                );
-                setEditingId(null);
-              }}
-            >
-              OK
-            </button>
-          </div>
-        )}
       </div>
     </main>
   );
